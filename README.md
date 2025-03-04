@@ -1,7 +1,7 @@
 # :wind_chime: Multi-Farm Multi-Step Wind Speed Prediction
 Implementation of Multi-Farm Multi-Step (MFMS) and Single-Farm Multi-Step (SFMS) models proposed in the article:
 
-**Title**: "*Simultaneous multi-step wind speed prediction on multiple farms using multi-task deep learning*"
+**Title**: *Simultaneous multi-step wind speed prediction on multiple farms using multi-task deep learning*
 
 **Authors**: Rafael Ayllón-Gavilán, Antonio Manuel Gómez-Orellana, Víctor Manuel Vargas, David Guijo-Rubio, Jorge Pérez-Aracil, Luis Prieto-Godino, Sancho Salcedo-Sanz, Pedro Antonio Gutiérrez, and César Hervás-Martínez
 
