@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-import torch
 import torch.nn as nn
 
 from torch.optim import Adam
@@ -9,19 +8,15 @@ from sklearn.metrics import root_mean_squared_error
 from copy import deepcopy
 
 
-def multifarm_rmse(y_true, y_pred):
-    return root_mean_squared_error(y_true.reshape(-1, 3 * 3), y_pred.reshape(-1, 3 * 3))
-
-
-class MFMSRegressor(BaseEstimator, ClassifierMixin):
+class SISONetRegressor(BaseEstimator, ClassifierMixin):
     """
-    Implementation of the Multi-Farm Multi-Step (MFMS) model for regression tasks.
+    Implementation of the SIngle-SOurce deep neural Network (SISONet) model for multi-step regression.
     """
 
     def __init__(
         self,
         *,
-        n_features=30,
+        n_features=10,
         n_hidden=32,
         n_shared=0,
         n_specific=0,
@@ -83,7 +78,7 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
         self.loss_history_val = []
 
     def _setup_model(self):
-        model = MFMSNetwork(
+        model = SISONet(
             n_input=self.n_features,
             n_hidden=self.n_hidden,
             n_shared=self.n_shared,
@@ -98,26 +93,26 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
 
     def _forward(self, X):
         output = self.model(X)
-        return output.to(self.device)
+        return output
 
     def set_train_mode(self, mode):
         self.model.train(mode)
 
-    def fit(self, X_train, y_train, X_val, y_val):
-        first_pass = not hasattr(self, "model")
-        if first_pass:
-            self._initialize()
+    def fit(self, X_train, y_train, X_val=None, y_val=None):
+        self._initialize()
 
         X_train = torch.tensor(X_train, dtype=torch.float).to(self.device)
-        X_val = torch.tensor(X_val, dtype=torch.float).to(self.device)
         y_train = torch.tensor(y_train, dtype=torch.float).to(self.device)
+        X_val = torch.tensor(X_val, dtype=torch.float).to(self.device)
         y_val = torch.tensor(y_val, dtype=torch.float).to(self.device)
 
         N = X_train.shape[0]
 
         burnt_patience = 0
+        self._initial_model = deepcopy(self.model.state_dict())
         self._best_model = deepcopy(self.model.state_dict())
         best_val_rmse = np.inf
+        best_n_epochs = self.max_epochs
         for epoch in range(self.max_epochs):
             epoch_loss = 0
             n_batches = (N // self.batch_size) + 1
@@ -125,7 +120,7 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
                 self.set_train_mode(True)
                 self.optimizer.zero_grad()
                 X_train_batch = X_train[(j * self.batch_size) : ((j + 1) * self.batch_size)]
-                y_train_batch = y_train[(j * self.batch_size) : ((j + 1) * self.batch_size), :, :]
+                y_train_batch = y_train[(j * self.batch_size) : ((j + 1) * self.batch_size), :]
 
                 pred_train_batch = self._forward(X_train_batch)
 
@@ -145,7 +140,7 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
                 val_loss = self.loss(pred_val, y_val).item()
                 self.loss_history_val.append(val_loss)
 
-                val_rmse = multifarm_rmse(y_val.cpu().numpy(), pred_val.cpu().numpy())
+                val_rmse = root_mean_squared_error(y_val.cpu().numpy(), pred_val.cpu().numpy())
                 if epoch == 0:
                     best_val_rmse = val_rmse
                 else:
@@ -159,6 +154,7 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
                 # Early stopping
                 if self.early_stopping_patience is not None:
                     if burnt_patience >= self.early_stopping_patience:
+                        best_n_epochs = epoch - burnt_patience
                         break
 
                 # Reduce LR on plateau
@@ -181,13 +177,68 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
                     if self.early_stopping_patience is not None:
                         print(f"* Best val RMSE: {best_val_rmse}")
                         print(f"* Burnt patience: {burnt_patience}")
-                    print("Val. RMSE:", val_rmse)
+                    print("RMSE:", val_rmse)
+                    print(
+                        "RSME → 6h:",
+                        root_mean_squared_error(
+                            y_val[:, 0].cpu().numpy(),
+                            pred_val[:, 0].cpu().numpy(),
+                        ),
+                    )
+                    print(
+                        "RSME → 12h:",
+                        root_mean_squared_error(
+                            y_val[:, 1].cpu().numpy(),
+                            pred_val[:, 1].cpu().numpy(),
+                        ),
+                    )
+                    print(
+                        "RSME → 24h:",
+                        root_mean_squared_error(
+                            y_val[:, 2].cpu().numpy(),
+                            pred_val[:, 2].cpu().numpy(),
+                        ),
+                    )
                     print("========================================\n")
 
         self.model.load_state_dict(self._best_model, strict=True, assign=True)
 
         with torch.no_grad():
-            recovered_best_val_rmse = multifarm_rmse(y_val.cpu().numpy(), self._forward(X_val).cpu().numpy())
+            # retrain on concatenated train and val sets with the best n_epochs found
+            X_train_val = torch.cat((X_train, X_val), dim=0)
+            y_train_val = torch.cat((y_train, y_val), dim=0)
+            # self.refit(X_train_val, y_train_val, n_epochs=best_n_epochs)
+
+        return self
+
+    def refit(self, X_train, y_train, n_epochs):
+        self._initialize()
+
+        if not isinstance(X_train, torch.Tensor):
+            X_train = torch.tensor(X_train, dtype=torch.float).to(self.device)
+        if not isinstance(y_train, torch.Tensor):
+            y_train = torch.tensor(y_train, dtype=torch.float).to(self.device)
+
+        N = X_train.shape[0]
+
+        self._best_model = deepcopy(self.model.state_dict())
+        for _ in range(n_epochs):
+            epoch_loss = 0
+            n_batches = (N // self.batch_size) + 1
+            for j in range(n_batches):
+                self.set_train_mode(True)
+                self.optimizer.zero_grad()
+                X_train_batch = X_train[(j * self.batch_size) : ((j + 1) * self.batch_size)]
+                y_train_batch = y_train[(j * self.batch_size) : ((j + 1) * self.batch_size), :]
+
+                pred_train_batch = self._forward(X_train_batch)
+
+                batch_loss = self.loss(pred_train_batch, y_train_batch)
+                epoch_loss += batch_loss.item()
+                batch_loss.backward()
+                self.optimizer.step()
+
+        self.model.load_state_dict(self._best_model, strict=True, assign=True)
 
         return self
 
@@ -198,14 +249,13 @@ class MFMSRegressor(BaseEstimator, ClassifierMixin):
             return self._forward(X).cpu().numpy()
 
 
-# Define the neural network class
-class MFMSNetwork(nn.Module):
+class SISONet(nn.Module):
     """
-    Implementation of the network for the MFMS model.
+    Implementation of the network for the SISONet model.
     """
 
     def __init__(self, n_input, n_hidden, n_shared, n_specific, activation, dropout):
-        super(MFMSNetwork, self).__init__()
+        super(SISONet, self).__init__()
         self.n_input = n_input
         self.n_hidden = n_hidden
         self.n_shared = n_shared
@@ -221,23 +271,10 @@ class MFMSNetwork(nn.Module):
         if n_shared > 0:
             self.shared_layers = nn.ModuleList([nn.Linear(n_hidden, n_hidden) for _ in range(n_shared)])
 
-        # FARM 0 layers
         self.fc_cf1s1 = nn.Linear(n_hidden, n_hidden)
         if n_specific > 0:
             self.farm1_specific_layers = nn.ModuleList([nn.Linear(n_hidden, n_hidden) for _ in range(n_specific)])
         self.fc_out_f1 = nn.Linear(n_hidden, 3)
-
-        # FARM 1 layers
-        self.fc_cf2s1 = nn.Linear(n_hidden, n_hidden)
-        if n_specific > 0:
-            self.farm2_specific_layers = nn.ModuleList([nn.Linear(n_hidden, n_hidden) for _ in range(n_specific)])
-        self.fc_out_f2 = nn.Linear(n_hidden, 3)
-
-        # FARM 2 layers
-        self.fc_cf3s1 = nn.Linear(n_hidden, n_hidden)
-        if n_specific > 0:
-            self.farm3_specific_layers = nn.ModuleList([nn.Linear(n_hidden, n_hidden) for _ in range(n_specific)])
-        self.fc_out_f3 = nn.Linear(n_hidden, 3)
 
         self.dropout = nn.Dropout(p=dropout)
 
@@ -262,31 +299,6 @@ class MFMSNetwork(nn.Module):
             for farm1_specific_layer in self.farm1_specific_layers:
                 cf1s1 = self.activation(farm1_specific_layer(cf1s1))
                 cf1s1 = self.dropout(cf1s1)
-        out_layer_f0 = self.fc_out_f1(cf1s1)
+        output = self.fc_out_f1(cf1s1)
 
-        # FARM 2
-        cf2s2 = self.activation(self.fc_cf2s1(c3))
-        cf2s2 = self.dropout(cf2s2)
-        if self.n_specific > 0:
-            for farm2_specific_layer in self.farm2_specific_layers:
-                cf2s2 = self.activation(farm2_specific_layer(cf2s2))
-                cf2s2 = self.dropout(cf2s2)
-        out_layer_f1 = self.fc_out_f2(cf2s2)
-
-        # FARM 3
-        cf3s2 = self.activation(self.fc_cf3s1(c3))
-        cf3s2 = self.dropout(cf3s2)
-        if self.n_specific > 0:
-            for farm3_specific_layer in self.farm3_specific_layers:
-                cf3s2 = self.activation(farm3_specific_layer(cf3s2))
-                cf3s2 = self.dropout(cf3s2)
-        out_layer_f2 = self.fc_out_f3(cf3s2)
-
-        if not isinstance(x.shape[0], int):
-            return torch.concat([out_layer_f0, out_layer_f1, out_layer_f2], dim=1)
-        else:
-            output = torch.ones((x.shape[0], 3, 3))
-            output[:, 0, :] = out_layer_f0
-            output[:, 1, :] = out_layer_f1
-            output[:, 2, :] = out_layer_f2
-            return output  # shape: (batch_size, n_farms, n_tasks)
+        return output

@@ -1,9 +1,8 @@
 import numpy as np
-from mfms import MFMSRegressor
+from musonet import MUSONetRegressor
 from sklearn.model_selection import RandomizedSearchCV
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import make_scorer, root_mean_squared_error
 from activ_function_elusplus2L import Elusplus2L
-from sklearn.metrics import make_scorer
 
 
 def multifarm_rmse(y_true, y_pred, Q, n_prediction_steps):
@@ -26,7 +25,7 @@ param_grid = {
 }
 
 method = RandomizedSearchCV(
-    MFMSRegressor(
+    MUSONetRegressor(
         n_features=n_features_per_source * Q,
         learning_rate=0.0001,
         activation=Elusplus2L(),
